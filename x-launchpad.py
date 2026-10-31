@@ -19,7 +19,7 @@ SELF = Path(__file__).resolve()
 
 # Files to hide from the menu (case-insensitive). Add more names here.
 EXCLUDE_LIST = [
-    "run_py.py",
+    "x-run_py.py",
 ]
 
 EXCLUDE = {SELF.name.lower()} | {name.lower() for name in EXCLUDE_LIST}
