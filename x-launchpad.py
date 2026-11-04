@@ -1,5 +1,6 @@
-# x-launchpad.py - menu to run a .py file in this folder with the venv, open a
-# terminal with the venv active, or start your editor. Stdlib only.
+# x-launchpad.py - menu to run a .py file in this folder or a python -m module
+# with the venv, open a terminal with the venv active, or start your editor.
+# Stdlib only.
 
 # ================================ SETTINGS ================================
 # Script names in these settings ignore case. Use the bare name for a file in
@@ -19,17 +20,23 @@ NO_WINDOW_LOG = "launchpad.log"        # output file for "no_window"; None = dis
 SCRIPT_ARGS = {}                       # always pass these: {"sync.py": ["--dry-run"]}
 EXTRA_ENV = {}                         # environment variables: {"PYTHONUTF8": "1"}
 
+# --- Running modules (python -m) ---
+# Menu name -> module, then any arguments. Listed above the scripts and run from
+# this folder. SCRIPT_RUN_MODES also accepts these menu names.
+# {"Dev server": ["uvicorn", "app.main:app", "--port", "8000"]}
+MODULES = {}
+
 # --- Which scripts are listed ---
 EXCLUDE_LIST = ["x-run_py.py"]         # exact script names to hide
 EXCLUDE_PATTERNS = []                  # wildcards to hide, matched on file name or path: ["test_*", "_*"]
-PINNED_SCRIPTS = []                    # always listed first, in this order: ["main.py"]
+PINNED_SCRIPTS = []                    # listed ahead of other scripts, in this order: ["main.py"]
 SCRIPT_LABELS = {}                     # friendly names: {"sync.py": "Sync database"}
 SCAN_SUBFOLDERS = []                   # also list scripts from these folders: ["tools"]
 
 # --- Menu behaviour ---
 CLEAR_SCREEN = False                   # clear the screen before drawing the menu
 DEFAULT_KEY = None                     # key that Enter triggers, e.g. "1"; None = ignore Enter
-AUTO_RUN_SINGLE = False                # skip the menu at startup if there's only one script
+AUTO_RUN_SINGLE = False                # skip the menu at startup if there's only one script or module
 SHOW_LAST_RESULT = False               # show the last script's name, exit code and run time
 
 # --- Terminal and editor options ---
@@ -99,6 +106,7 @@ CMD = object()   # marker returned by choose() for the terminal option
 CODE = object()  # marker returned by choose() for the editor option
 
 Result = namedtuple("Result", "name rc seconds mode")
+Module = namedtuple("Module", "label name args")  # a menu entry from MODULES
 
 
 def _lowered(mapping):
@@ -224,6 +232,15 @@ def settings_problems():
         if not isinstance(args, (list, tuple)):
             problems.append(f"SCRIPT_ARGS[{script!r}] must be a list, like [\"--dry-run\"]")
 
+    for label, spec in MODULES.items():
+        if (not isinstance(spec, (list, tuple)) or not spec
+                or not all(isinstance(part, str) for part in spec)):
+            problems.append(f"MODULES[{label!r}] must be a list of strings, "
+                            "like [\"my_pkg.tool\", \"--port\", \"8000\"]")
+        elif not re.fullmatch(r"[^\W\d]\w*(\.[^\W\d]\w*)*", spec[0]):
+            problems.append(f"MODULES[{label!r}] starts with {spec[0]!r} - "
+                            "the first item must be a module name, like \"my_pkg.tool\"")
+
     for name, value in (("CMD_KEY", CMD_KEY), ("CODE_KEY", CODE_KEY)):
         if len(value) != 1 or value not in string.ascii_lowercase or value == "q":
             problems.append(f"{name} is {value!r} - use a single letter other than q")
@@ -314,6 +331,17 @@ def find_scripts():
         if path is not None:
             pinned.append(path)
     return pinned + list(by_key.values())
+
+
+def find_modules():
+    return [Module(label, spec[0], list(spec[1:])) for label, spec in MODULES.items()]
+
+
+def entry_label(entry):
+    """How a menu entry is shown: a module's name from MODULES, or a script's label."""
+    if isinstance(entry, Module):
+        return entry.label
+    return LABELS.get(script_key(entry), rel_name(entry))
 
 
 def _find_editor_by_name(exe):
@@ -532,13 +560,13 @@ def open_editor(exe):
     return 0
 
 
-def run_and_report(py, script, args):
-    """Run in this window and wait, then report and pause as PAUSE_AFTER_RUN says."""
-    name = rel_name(script)
+def run_and_report(py, name, target, cwd):
+    """Run in this window and wait, then report and pause as PAUSE_AFTER_RUN says.
+    target is what follows python on the command line: a script or -m module, then args."""
     print(c(f"Running {name}", "bold") + c(f"  ({py})", "dim"), flush=True)
     print(c(BOX["h"] * 60, "dim"), flush=True)
     try:
-        rc = subprocess.call([str(py), str(script), *args], cwd=script.parent, env=script_env())
+        rc = subprocess.call([str(py), *target], cwd=cwd, env=script_env())
     except KeyboardInterrupt:
         rc = INTERRUPTED
     except OSError as e:
@@ -562,15 +590,14 @@ def run_and_report(py, script, args):
     return rc
 
 
-def start_new_window(py, script, args):
+def start_new_window(py, name, target, cwd):
     """New console that runs this file as a worker, so the pause still works there."""
-    subprocess.Popen([str(py), str(SELF), WORKER_RUN, str(py), str(script), *args],
-                     cwd=script.parent, env=script_env(), creationflags=CREATE_NEW_CONSOLE)
+    subprocess.Popen([str(py), str(SELF), WORKER_RUN, str(py), name, *target],
+                     cwd=cwd, env=script_env(), creationflags=CREATE_NEW_CONSOLE)
 
 
-def start_no_window(py, script, args):
+def start_no_window(py, name, target, cwd):
     """No console at all: pythonw.exe, with output going to NO_WINDOW_LOG."""
-    name = rel_name(script)
     pythonw = py.parent / "pythonw.exe"
     if not pythonw.exists():
         print(c(f"pythonw.exe not found - using {py.name} without a window.", "yellow"))
@@ -578,9 +605,9 @@ def start_no_window(py, script, args):
     env = {**script_env(), "PYTHONUNBUFFERED": "1"}
     env.setdefault("PYTHONIOENCODING", "utf-8")
     flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-    command = [str(pythonw), str(script), *args]
+    command = [str(pythonw), *target]
     if NO_WINDOW_LOG is None:
-        subprocess.Popen(command, cwd=script.parent, env=env, creationflags=flags,
+        subprocess.Popen(command, cwd=cwd, env=env, creationflags=flags,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
         return
@@ -589,28 +616,33 @@ def start_no_window(py, script, args):
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log.write(f"\n--- {stamp} {name}\n")
         log.flush()
-        subprocess.Popen(command, cwd=script.parent, env=env, creationflags=flags,
+        subprocess.Popen(command, cwd=cwd, env=env, creationflags=flags,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
     print(f"Output goes to {log_path}", flush=True)
 
 
-def launch_script(py, script):
-    name = rel_name(script)
-    key = script_key(script)
+def launch(py, entry):
+    """Run a menu entry: a script path or a Module."""
+    if isinstance(entry, Module):
+        name, key, cwd = entry.label, entry.label.lower(), HERE
+        target = ["-m", entry.name, *entry.args]
+    else:
+        name, key, cwd = rel_name(entry), script_key(entry), entry.parent
+        target = [str(entry), *ARGS_BY_SCRIPT.get(key, [])]
+    target += sys.argv[1:]
     mode = MODE_BY_SCRIPT.get(key, RUN_MODE)
-    args = [*ARGS_BY_SCRIPT.get(key, []), *sys.argv[1:]]
 
     if mode == SAME_WINDOW:
         started = time.monotonic()
-        rc = run_and_report(py, script, args)
+        rc = run_and_report(py, name, target, cwd)
         return Result(name, rc, time.monotonic() - started, mode)
 
     print(f"Starting {name} ({mode.replace('_', ' ')}).", flush=True)
     try:
         if mode == NEW_WINDOW:
-            start_new_window(py, script, args)
+            start_new_window(py, name, target, cwd)
         else:
-            start_no_window(py, script, args)
+            start_no_window(py, name, target, cwd)
     except OSError as e:
         report_problem(f"Could not start {name}: {e}")
         return Result(name, 1, None, mode)
@@ -623,7 +655,7 @@ def worker_main(argv):
     """Runs inside a new window started by the launchpad. Returns an exit code."""
     kind, py = argv[0], Path(argv[1])
     if kind == WORKER_RUN:
-        return run_and_report(py, Path(argv[2]), argv[3:])
+        return run_and_report(py, argv[2], argv[3:], Path.cwd())
     terminal = subprocess.Popen(["cmd.exe"], cwd=HERE, env=venv_env(py))
     while True:
         try:
@@ -648,10 +680,10 @@ def last_result_row(result):
     return (c(text, colour), "")
 
 
-def choose(venv_py, run_py, scripts, editor, last_result):
-    """Show the menu. Scripts need a Python to run with, the terminal needs a venv;
-    the editor and quit always work."""
-    keyed = dict(zip(KEYS, scripts)) if run_py else {}
+def choose(venv_py, run_py, entries, editor, last_result):
+    """Show the menu. Scripts and modules need a Python to run with, the terminal
+    needs a venv; the editor and quit always work."""
+    keyed = dict(zip(KEYS, entries)) if run_py else {}
     actions = {}
 
     # Header: title + Python in use, then the folder path.
@@ -668,20 +700,19 @@ def choose(venv_py, run_py, scripts, editor, last_result):
     if SHOW_LAST_RESULT and last_result:
         header.append(last_result_row(last_result))
 
-    # Body: the scripts, or why there aren't any.
+    # Body: the modules and scripts, or why there aren't any.
     if run_py is None:
         body = [(c("No venv found - scripts can't be run.", "yellow"), "")]
-    elif not scripts:
+    elif not entries:
         body = [(c("No .py files in this folder.", "yellow"), "")]
     else:
         name_room = max(10, cols - 12)
         body = []
-        for k, p in keyed.items():
-            label = LABELS.get(script_key(p), rel_name(p))
-            body.append((f"{c(f'[{k}]', *KEY_STYLE)} {shorten(label, name_room)}", ""))
-        if len(scripts) > len(KEYS):
-            body.append((c(f"(showing first {len(KEYS)} of {len(scripts)})", "dim"), ""))
-        body.append(("", ""))  # blank line after the last script
+        for k, entry in keyed.items():
+            body.append((f"{c(f'[{k}]', *KEY_STYLE)} {shorten(entry_label(entry), name_room)}", ""))
+        if len(entries) > len(KEYS):
+            body.append((c(f"(showing first {len(KEYS)} of {len(entries)})", "dim"), ""))
+        body.append(("", ""))  # blank line after the last entry
 
     # Footer: standard options on one line.
     footer = []
@@ -733,15 +764,15 @@ def main():
     while True:
         venv_py = created_py or find_venv_python()
         run_py = venv_py or (base_python() if ALLOW_SYSTEM_PYTHON else None)
-        scripts = find_scripts()
+        entries = [*find_modules(), *find_scripts()]
         editor = find_editor() if SHOW_EDITOR_OPTION else None
 
-        if first_pass and AUTO_RUN_SINGLE and run_py and len(scripts) == 1:
-            choice = scripts[0]
+        if first_pass and AUTO_RUN_SINGLE and run_py and len(entries) == 1:
+            choice = entries[0]
         else:
             if CLEAR_SCREEN:
                 clear_screen()
-            choice = choose(venv_py, run_py, scripts, editor, last_result)
+            choice = choose(venv_py, run_py, entries, editor, last_result)
         first_pass = False
 
         if choice is None:
@@ -751,7 +782,7 @@ def main():
         elif choice is CODE:
             rc = open_editor(editor)
         else:
-            last_result = launch_script(run_py, choice)
+            last_result = launch(run_py, choice)
             rc = last_result.rc or 0
         if not RETURN_TO_MENU:
             return rc

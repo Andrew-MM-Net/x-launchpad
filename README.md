@@ -1,6 +1,6 @@
 # x-launchpad
 
-A single-keypress menu for the folder it sits in. Use it to run a Python script with the folder's virtual environment, open a terminal with the venv active, or start your editor.
+A single-keypress menu for the folder it sits in. Use it to run a Python script or `python -m` module with the folder's virtual environment, open a terminal with the venv active, or start your editor.
 
 It's one file, uses only the standard library, and is built for Windows.
 
@@ -31,14 +31,14 @@ Pick:
 
 | Key | Action |
 |---|---|
-| `1`–`9`, then letters | Run that script |
+| `1`–`9`, then letters | Run that module or script |
 | `c` | Open a terminal with the venv active, in a new window |
 | `v` | Open this folder in your editor |
 | `q`, Esc or Ctrl+C | Quit |
 
-Up to 32 scripts get a key. If there are more, the menu shows a "showing first 32" note.
+Up to 32 entries get a key. If there are more, the menu shows a "showing first 32" note.
 
-Anything you pass to the launchpad goes to the script you pick, so `x-launchpad.py --foo` runs `yourscript.py --foo`.
+Anything you pass to the launchpad goes to the script or module you pick, so `x-launchpad.py --foo` runs `yourscript.py --foo`.
 
 ## Settings
 
@@ -64,7 +64,24 @@ Script names ignore case. Use the bare name for a file in this folder (`sync.py`
 | `RETURN_TO_MENU` | `False` | `True` goes back to the menu; `False` closes the launchpad |
 | `NO_WINDOW_LOG` | `"launchpad.log"` | Output file for `"no_window"`; `None` discards the output |
 | `SCRIPT_ARGS` | `{}` | Arguments to always pass, such as `{"sync.py": ["--dry-run"]}` |
-| `EXTRA_ENV` | `{}` | Environment variables for scripts and the terminal |
+| `EXTRA_ENV` | `{}` | Environment variables for scripts, modules and the terminal |
+
+### Running modules
+
+Use `MODULES` to add `python -m` commands to the menu. Each entry maps a menu name to the module, followed by any arguments:
+
+```python
+MODULES = {
+    "Dev server": ["uvicorn", "app.main:app", "--port", "8000"],
+    "Sync": ["my_pkg.tools.sync", "--dry-run"],
+}
+```
+
+Pressing the key for `"Sync"` runs `python -m my_pkg.tools.sync --dry-run` with the venv's Python.
+
+- **Menu order:** modules are listed above all scripts, including pinned ones, in the order you wrote them.
+- **Working folder:** modules run from the launchpad's folder, so packages in this folder can be imported.
+- **Run mode:** modules use `RUN_MODE`. To override it, use the menu name in `SCRIPT_RUN_MODES`, such as `{"Dev server": "new_window"}`.
 
 ### Which scripts are listed
 
@@ -74,7 +91,7 @@ Scripts are listed by name, starting with this folder and then each subfolder in
 |---|---|---|
 | `EXCLUDE_LIST` | `["x-run_py.py"]` | Exact script names to hide |
 | `EXCLUDE_PATTERNS` | `[]` | Wildcards to hide, matched on the file name or path, such as `["test_*"]` |
-| `PINNED_SCRIPTS` | `[]` | Scripts to list first, in this order |
+| `PINNED_SCRIPTS` | `[]` | Scripts to list ahead of other scripts, in this order |
 | `SCRIPT_LABELS` | `{}` | Friendly names, such as `{"sync.py": "Sync database"}` |
 | `SCAN_SUBFOLDERS` | `[]` | Extra folders to list scripts from, such as `["tools"]` |
 
@@ -84,7 +101,7 @@ Scripts are listed by name, starting with this folder and then each subfolder in
 |---|---|---|
 | `CLEAR_SCREEN` | `False` | Clears the screen before drawing the menu |
 | `DEFAULT_KEY` | `None` | The key Enter triggers, such as `"1"`; `None` ignores Enter |
-| `AUTO_RUN_SINGLE` | `False` | Skips the menu at startup if there's only one script |
+| `AUTO_RUN_SINGLE` | `False` | Skips the menu at startup if there's only one script or module |
 | `SHOW_LAST_RESULT` | `False` | Shows the last script's name, exit code and run time in the menu |
 
 ### Terminal and editor
@@ -108,6 +125,60 @@ Scripts are listed by name, starting with this folder and then each subfolder in
 | `KEY_STYLE` | `("bold",)` | Style of the `[1]` `[c]` `[q]` labels |
 
 Styles can combine `bold`, `dim`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan` and `white`. A single style needs the trailing comma, as in `("bold",)`. Setting the `NO_COLOR` environment variable turns colour off.
+
+## Example configs
+
+To use an example, change these values in the settings at the top of `x-launchpad.py`. Anything an example doesn't mention keeps its current value.
+
+### Web app
+
+Starts the server in its own window and keeps the menu open for tests and migrations. The launchpad waits for a key after each same-window command, so you can read the output.
+
+```python
+MODULES = {
+    "Dev server": ["uvicorn", "app.main:app", "--reload"],
+    "Tests": ["pytest", "-q"],
+    "Migrate database": ["alembic", "upgrade", "head"],
+}
+SCRIPT_RUN_MODES = {"Dev server": "new_window"}
+RETURN_TO_MENU = True
+PAUSE_AFTER_RUN = "always"
+```
+
+### Folder of scripts
+
+Lists scripts from this folder and `tools`, with `main.py` first and friendlier names. The menu stays open and shows how the last script went.
+
+```python
+SCAN_SUBFOLDERS = ["tools"]
+EXCLUDE_PATTERNS = ["test_*", "_*"]
+PINNED_SCRIPTS = ["main.py"]
+SCRIPT_LABELS = {"tools/sync.py": "Sync database"}
+SCRIPT_ARGS = {"tools/sync.py": ["--dry-run"]}
+RETURN_TO_MENU = True
+SHOW_LAST_RESULT = True
+```
+
+### One main command
+
+Enter runs the module, and the other keys still work. The module gets its settings from a config file, and `c` opens PowerShell.
+
+```python
+MODULES = {"Start": ["my_app", "--config", "config.toml"]}
+DEFAULT_KEY = "1"
+EXTRA_ENV = {"PYTHONUTF8": "1"}
+TERMINAL = "powershell"
+```
+
+### Tray app
+
+Double-click the launchpad to start the only script in the folder with no console, then the launchpad closes. Output goes to `tray.log`.
+
+```python
+RUN_MODE = "no_window"
+AUTO_RUN_SINGLE = True
+NO_WINDOW_LOG = "tray.log"
+```
 
 ## Run modes
 
